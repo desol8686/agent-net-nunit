@@ -1,0 +1,1 @@
+dotnet pack src/ReportPortal.NUnitExtension/ReportPortal.NUnitExtension.csproj --configuration Debug --output ./nupkgs
