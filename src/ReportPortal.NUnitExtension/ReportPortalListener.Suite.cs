@@ -60,37 +60,16 @@ namespace ReportPortal.NUnitExtension
                     }
                 }
 
+                // TODO: Отложенное создание Suite - не создаем TestReporter сразу, а только сохраняем информацию
+                // Это позволяет не стартовать namespace'ы преждевременно в ReportPortal
                 if (!beforeSuiteEventArg.Canceled)
                 {
-                    ITestReporter suiteReporter;
-
-                    if (string.IsNullOrEmpty(parentId) || !_flowItems.ContainsKey(parentId))
+                    // Создаем FlowItemInfo без TestReporter - он будет создан позже при реальном запуске тестов
+                    _flowItems[id] = new FlowItemInfo(id, parentId, FlowItemInfo.FlowType.Suite, name, null, startTime)
                     {
-                        suiteReporter = _launchReporter.StartChildTestReporter(startSuiteRequest);
-                    }
-                    else
-                    {
-                        var parentFlowItem = FindReportedParentFlowItem(parentId);
-                        if (parentFlowItem == null)
-                        {
-                            suiteReporter = _launchReporter.StartChildTestReporter(startSuiteRequest);
-                        }
-                        else
-                        {
-                            suiteReporter = parentFlowItem.TestReporter.StartChildTestReporter(startSuiteRequest);
-                        }
-                    }
-
-                    _flowItems[id] = new FlowItemInfo(id, parentId, FlowItemInfo.FlowType.Suite, name, suiteReporter, startTime);
-
-                    try
-                    {
-                        AfterSuiteStarted?.Invoke(this, new TestItemStartedEventArgs(_rpService, startSuiteRequest, suiteReporter, report));
-                    }
-                    catch (Exception exp)
-                    {
-                        _traceLogger.Error("Exception was thrown in 'AfterSuiteStarted' subscriber." + Environment.NewLine + exp);
-                    }
+                        PendingStartSuiteRequest = startSuiteRequest,
+                        PendingStartSuiteReport = report
+                    };
                 }
                 else
                 {
@@ -100,6 +79,75 @@ namespace ReportPortal.NUnitExtension
             catch (Exception exception)
             {
                 _traceLogger.Error("ReportPortal exception was thrown." + Environment.NewLine + exception);
+            }
+        }
+
+        /// <summary>
+        /// Создать TestReporter для Suite если он еще не создан (отложенное создание).
+        /// </summary>
+        /// <param name="suiteId">ID Suite для создания</param>
+        private void EnsureSuiteReporterCreated(string suiteId)
+        {
+            if (!_flowItems.ContainsKey(suiteId))
+                return;
+
+            var suiteFlowItem = _flowItems[suiteId];
+            
+            // Если TestReporter уже создан, ничего не делаем
+            if (suiteFlowItem.TestReporter != null)
+                return;
+
+            // Если нет отложенного запроса, значит Suite был отменен
+            if (suiteFlowItem.PendingStartSuiteRequest == null)
+                return;
+
+            try
+            {
+                ITestReporter suiteReporter;
+
+                if (string.IsNullOrEmpty(suiteFlowItem.ParentId) || !_flowItems.ContainsKey(suiteFlowItem.ParentId))
+                {
+                    suiteReporter = _launchReporter.StartChildTestReporter(suiteFlowItem.PendingStartSuiteRequest);
+                }
+                else
+                {
+                    // Убеждаемся что родительский Suite тоже создан
+                    EnsureSuiteReporterCreated(suiteFlowItem.ParentId);
+                    
+                    var parentFlowItem = FindReportedParentFlowItem(suiteFlowItem.ParentId);
+                    if (parentFlowItem == null)
+                    {
+                        suiteReporter = _launchReporter.StartChildTestReporter(suiteFlowItem.PendingStartSuiteRequest);
+                    }
+                    else
+                    {
+                        suiteReporter = parentFlowItem.TestReporter.StartChildTestReporter(suiteFlowItem.PendingStartSuiteRequest);
+                    }
+                }
+
+                // Обновляем время старта на текущее время (реальный момент запуска)
+                var actualStartTime = DateTime.UtcNow;
+                
+                // Обновляем время старта в запросе для корректного отображения в ReportPortal
+                suiteFlowItem.PendingStartSuiteRequest.StartTime = actualStartTime;
+                
+                // Обновляем FlowItemInfo с созданным TestReporter и актуальным временем старта
+                _flowItems[suiteId] = new FlowItemInfo(suiteId, suiteFlowItem.ParentId, 
+                    FlowItemInfo.FlowType.Suite, suiteFlowItem.FullName, suiteReporter, actualStartTime);
+
+                try
+                {
+                    AfterSuiteStarted?.Invoke(this, new TestItemStartedEventArgs(_rpService, 
+                        suiteFlowItem.PendingStartSuiteRequest, suiteReporter, suiteFlowItem.PendingStartSuiteReport));
+                }
+                catch (Exception exp)
+                {
+                    _traceLogger.Error("Exception was thrown in 'AfterSuiteStarted' subscriber." + Environment.NewLine + exp);
+                }
+            }
+            catch (Exception exception)
+            {
+                _traceLogger.Error("ReportPortal exception was thrown during deferred suite creation." + Environment.NewLine + exception);
             }
         }
 
@@ -143,10 +191,21 @@ namespace ReportPortal.NUnitExtension
 
                     if (_flowItems.ContainsKey(id))
                     {
+                        // Проверяем, был ли Suite реально запущен (имеет TestReporter)
+                        // Если нет, то не нужно его завершать - он не отправлялся в ReportPortal
+                        if (_flowItems[id].TestReporter == null)
+                        {
+                            // Просто удаляем из _flowItems без отправки в ReportPortal
+                            _flowItems.Remove(id);
+                            return;
+                        }
+
                         // finishing suite
+                        // Используем текущее время как EndTime для корректного отображения duration
+                        // Так как StartTime был обновлен на момент реального создания Suite
                         var finishSuiteRequest = new FinishTestItemRequest
                         {
-                            EndTime = _flowItems[id].StartTime.AddSeconds(duration),
+                            EndTime = DateTime.UtcNow,
                             Status = _statusMap[result]
                         };
 

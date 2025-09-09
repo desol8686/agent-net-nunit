@@ -158,6 +158,16 @@ namespace ReportPortal.NUnitExtension
 
             public Action<string, FinishTestItemRequest, string, string> DeferredFinishAction { get; set; }
 
+            /// <summary>
+            /// Отложенный запрос для создания Suite (для отложенного старта namespace'ов).
+            /// </summary>
+            public StartTestItemRequest PendingStartSuiteRequest { get; set; }
+
+            /// <summary>
+            /// Отложенный отчет для создания Suite (для отложенного старта namespace'ов).
+            /// </summary>
+            public string PendingStartSuiteReport { get; set; }
+
             public override string ToString()
             {
                 return $"{FullName}";

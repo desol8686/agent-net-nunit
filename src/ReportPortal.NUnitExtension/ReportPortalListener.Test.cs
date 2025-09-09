@@ -54,6 +54,10 @@ namespace ReportPortal.NUnitExtension
                 }
                 if (!beforeTestEventArg.Canceled)
                 {
+                    // Убеждаемся что родительский Suite создан перед запуском теста
+                    // Это обеспечивает отложенное создание namespace'ов только при реальном выполнении тестов
+                    EnsureSuiteReporterCreated(parentId);
+                    
                     var testReporter = _flowItems[parentId].TestReporter.StartChildTestReporter(startTestRequest);
 
                     _flowItems[id] = new FlowItemInfo(id, parentId, FlowItemInfo.FlowType.Test, fullname, testReporter, startTime);
