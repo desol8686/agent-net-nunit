@@ -314,6 +314,12 @@ namespace ReportPortal.NUnitExtension
 
                     Action<string, FinishTestItemRequest, string, string> finishTestAction = (__id, __finishTestItemRequest, __report, __parentstacktrace) =>
                     {
+                        // Проверяем, что элемент еще существует (deferred action может быть вызван позже)
+                        if (!_flowItems.ContainsKey(__id) || _flowItems[__id].TestReporter == null)
+                        {
+                            return;
+                        }
+
                         if (!string.IsNullOrEmpty(__parentstacktrace))
                         {
                             _flowItems[__id].TestReporter.Log(new CreateLogItemRequest
@@ -367,6 +373,15 @@ namespace ReportPortal.NUnitExtension
 
                 if (_flowItems.ContainsKey(id))
                 {
+                    // Находим FlowItem с непустым TestReporter (может быть родитель, если текущий Suite еще не создан)
+                    var flowItem = FindFlowItem(id);
+                    
+                    // Если TestReporter все еще null (например, для отмененных Suite), пропускаем логирование
+                    if (flowItem.TestReporter == null)
+                    {
+                        return;
+                    }
+
                     CreateLogItemRequest logRequest = null;
                     try
                     {
@@ -394,11 +409,11 @@ namespace ReportPortal.NUnitExtension
 
                     if (logRequest != null)
                     {
-                        _flowItems[id].TestReporter.Log(logRequest);
+                        flowItem.TestReporter.Log(logRequest);
                     }
                     else
                     {
-                        _flowItems[id].TestReporter.Log(new CreateLogItemRequest { Level = LogLevel.Info, Time = DateTime.UtcNow, Text = message });
+                        flowItem.TestReporter.Log(new CreateLogItemRequest { Level = LogLevel.Info, Time = DateTime.UtcNow, Text = message });
                     }
 
                 }
@@ -481,7 +496,13 @@ namespace ReportPortal.NUnitExtension
                 }
                 else
                 {
-                    FindFlowItem(testId).TestReporter.Log(logRequest);
+                    var flowItem = FindFlowItem(testId);
+                    
+                    // Если TestReporter все еще null (например, для отмененных Suite), пропускаем логирование
+                    if (flowItem.TestReporter != null)
+                    {
+                        flowItem.TestReporter.Log(logRequest);
+                    }
                 }
             }
         }
@@ -524,11 +545,25 @@ namespace ReportPortal.NUnitExtension
                 }
                 else
                 {
-                    nestedStep = FindFlowItem(testId).TestReporter.StartChildTestReporter(startTestItemRequest);
+                    var flowItem = FindFlowItem(testId);
+                    
+                    // Если TestReporter все еще null (например, для отмененных Suite), не создаем nested step
+                    if (flowItem.TestReporter != null)
+                    {
+                        nestedStep = flowItem.TestReporter.StartChildTestReporter(startTestItemRequest);
+                    }
+                    else
+                    {
+                        // Если TestReporter null, используем _launchReporter как fallback
+                        nestedStep = _launchReporter?.StartChildTestReporter(startTestItemRequest);
+                    }
                 }
             }
 
-            _nestedSteps[message.Id] = nestedStep;
+            if (nestedStep != null)
+            {
+                _nestedSteps[message.Id] = nestedStep;
+            }
         }
 
         private Dictionary<Shared.Execution.Logging.LogScopeStatus, Status> _nestedStepStatusMap = new Dictionary<Shared.Execution.Logging.LogScopeStatus, Status> {
@@ -551,6 +586,12 @@ namespace ReportPortal.NUnitExtension
 
         private void HandleEndScopeCommunicationMessage(EndScopeCommunicationMessage message)
         {
+            // Проверяем, что nested step существует (может не существовать, если он не был создан из-за null TestReporter)
+            if (!_nestedSteps.ContainsKey(message.Id))
+            {
+                return;
+            }
+
             var nestedStep = _nestedSteps[message.Id];
 
             nestedStep.Finish(new FinishTestItemRequest
