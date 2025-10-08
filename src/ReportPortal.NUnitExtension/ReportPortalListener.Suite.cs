@@ -191,13 +191,19 @@ namespace ReportPortal.NUnitExtension
 
                     if (_flowItems.ContainsKey(id))
                     {
-                        // Проверяем, был ли Suite реально запущен (имеет TestReporter)
-                        // Если нет, то не нужно его завершать - он не отправлялся в ReportPortal
+                        // Убеждаемся, что Suite действительно создан в ReportPortal (OneTimeSetup мог упасть до старта тестов)
                         if (_flowItems[id].TestReporter == null)
                         {
-                            // Просто удаляем из _flowItems без отправки в ReportPortal
-                            _flowItems.Remove(id);
-                            return;
+                            // Пытаемся отложенно создать Suite перед завершением
+                            EnsureSuiteReporterCreated(id);
+
+                            // Если по каким-то причинам создать не удалось (например, Suite был отменен),
+                            // больше ничего сделать нельзя — удаляем из трекинга и завершаем обработку
+                            if (_flowItems[id].TestReporter == null)
+                            {
+                                _flowItems.Remove(id);
+                                return;
+                            }
                         }
 
                         // finishing suite
@@ -273,6 +279,12 @@ namespace ReportPortal.NUnitExtension
 
                         Action<string, FinishTestItemRequest, string, string> finishSuiteAction = (__id, __finishSuiteRequest, __report, __parentstacktrace) =>
                         {
+                            // Проверяем, что элемент еще существует (deferred action может быть вызван позже)
+                            if (!_flowItems.ContainsKey(__id))
+                            {
+                                return;
+                            }
+
                             // find all defferred children test items to finish
                             var deferredFlowItems = _flowItems.Where(fi => fi.Value.ParentId == __id && fi.Value.DeferredFinishAction != null).Select(fi => fi.Value).ToList();
                             foreach (var deferredFlowItem in deferredFlowItems)
@@ -280,15 +292,31 @@ namespace ReportPortal.NUnitExtension
                                 deferredFlowItem.DeferredFinishAction.Invoke(deferredFlowItem.Id, deferredFlowItem.FinishTestItemRequest, deferredFlowItem.Report, __parentstacktrace);
                             }
 
-                            _flowItems[__id].TestReporter?.Finish(__finishSuiteRequest);
-
-                            try
+                            var testReporter = _flowItems[__id].TestReporter;
+                            
+                            // Если есть стек из OneTimeSetup, пишем его в лог Suite
+                            if (!string.IsNullOrEmpty(__parentstacktrace) && testReporter != null)
                             {
-                                AfterSuiteFinished?.Invoke(this, new TestItemFinishedEventArgs(_rpService, __finishSuiteRequest, _flowItems[__id].TestReporter, __report));
+                                testReporter.Log(new CreateLogItemRequest
+                                {
+                                    Level = LogLevel.Error,
+                                    Time = DateTime.UtcNow,
+                                    Text = __parentstacktrace
+                                });
                             }
-                            catch (Exception exp)
+                            
+                            testReporter?.Finish(__finishSuiteRequest);
+
+                            if (testReporter != null)
                             {
-                                _traceLogger.Error("Exception was thrown in 'AfterSuiteFinished' subscriber." + Environment.NewLine + exp);
+                                try
+                                {
+                                    AfterSuiteFinished?.Invoke(this, new TestItemFinishedEventArgs(_rpService, __finishSuiteRequest, testReporter, __report));
+                                }
+                                catch (Exception exp)
+                                {
+                                    _traceLogger.Error("Exception was thrown in 'AfterSuiteFinished' subscriber." + Environment.NewLine + exp);
+                                }
                             }
 
                             _flowItems.Remove(__id);
